@@ -447,6 +447,23 @@ aws s3 rb s3://25cdkg-medical-qa --force
 
 ## 💰 Cloud Infrastructure Cost Summary
 
+Service	Service Total	April 2026	May 2026
+Total costs	$2.51	$2.51	$0.00
+Elastic MapReduce	$1.22	$1.22	-
+Elastic Load Balancing	$0.65	$0.65	-
+EC2-Other	$0.30	$0.30	$0.00
+VPC	$0.30	$0.30	$0.00
+EC2-Instances	$0.02	$0.02	$0.00
+S3	$0.01	$0.01	$0.00
+Secrets Manager	$0.00	$0.00	$0.00
+CloudShell	$0.00	$0.00	-
+Glue	$0.00	$0.00	$0.00
+Key Management Service	$0.00	$0.00	-
+SNS	$0.00	$0.00	-
+SQS	$0.00	$0.00	-
+Tax	$0.00	-	$0.00
+Data Transfer	-$0.00	-	-$0.00
+
 ### By Service (Actual — AWS Cost Explorer, April 2026)
 
 > For a minimal reproduction (EMR + EC2 + S3 only), expected cost is approximately **$15–20 USD**. All resources terminated after use. Cost data from AWS Cost Explorer screenshots in `AWS_Images/`.
