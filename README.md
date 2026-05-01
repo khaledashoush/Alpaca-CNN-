@@ -1,654 +1,693 @@
-🏥 MedAssist — Cloud-Based Medical QA Chat Assistant
+# 🏥 Medical Q&A Chat Assistant — CISC 886 Cloud Computing
 
-CISC 886 — Cloud Computing | Queen's University NetID: 25cdkg
+> **Queen's University · School of Computing · Kingston, Canada**  
+> An end-to-end cloud-native medical question-answering system: from raw data on S3 → PySpark preprocessing on EMR → LoRA fine-tuning on Colab → GGUF deployment on EC2 → live chat via OpenWebUI.
 
-Student: Salma Essam
+---
 
-A cloud-based conversational chatbot designed to act as a Professional Medical Assistant. It leverages a fine-tuned Qwen 2.5 1.5B Instruct LLM trained on 17,023 structured medical Q&A records derived from the Comprehensive Medical Q&A Dataset, deployed entirely on AWS infrastructure.
+## 📋 Table of Contents
 
-🚀 Quickstart (TL;DR)
+- [Project Overview](#-project-overview)
+- [System Architecture](#-system-architecture)
+- [Prerequisites](#-prerequisites)
+- [Repository Structure](#-repository-structure)
+- [Phase 1 — AWS VPC & Networking](#-phase-1--aws-vpc--networking)
+- [Phase 2 — Dataset & S3 Setup](#-phase-2--dataset--s3-setup)
+- [Phase 3 — Data Preprocessing on EMR](#-phase-3--data-preprocessing-on-emr)
+- [Phase 4 — Model Fine-Tuning (Colab)](#-phase-4--model-fine-tuning-colab)
+- [Phase 5 — Model Deployment on EC2](#-phase-5--model-deployment-on-ec2)
+- [Phase 6 — Web Interface (OpenWebUI)](#-phase-6--web-interface-openwebui)
+- [Hyperparameter Table](#-hyperparameter-table)
+- [AWS Cost Summary](#-aws-cost-summary)
+- [Replication Checklist](#-replication-checklist)
 
-Step 1 → AWS Console              # Create VPC, Subnet, SG, S3
-Step 2 → aws s3 cp train.csv      # Upload raw data to S3
-Step 3 → EMR Cluster (PySpark)    # Preprocess 38K records → JSONL
-Step 4 → GPU Machine              # LoRA fine-tune → export GGUF
-Step 5 → EC2 Instance             # Ollama + OpenWebUI (Docker)
-Step 6 → Teardown                 # Terminate all resources
+---
 
+## 🔭 Project Overview
 
+This project builds a **domain-specific medical chat assistant** fine-tuned on the [Comprehensive Medical Q&A Dataset](https://www.kaggle.com/datasets/thedevastator/comprehensive-medical-q-a-dataset) from Kaggle. The system is deployed end-to-end on AWS and accessible through a browser-based chat interface.
 
-Full commands for each step are in the sections below.
+| Component | Technology |
+|-----------|-----------|
+| Dataset | Kaggle — Comprehensive Medical Q&A (train.csv) |
+| Preprocessing | Apache PySpark on AWS EMR |
+| Storage | Amazon S3 |
+| Base Model | `Qwen2.5-1.5B-Instruct` (1.5 B parameters, 4-bit quantized) |
+| Fine-Tuning | Unsloth + LoRA (PEFT) on Google Colab |
+| Export Format | GGUF (Q4_K_M quantization) |
+| Model Serving | Ollama on AWS EC2 |
+| Chat Interface | OpenWebUI |
+| Networking | Custom AWS VPC (no default VPC used) |
 
-🏗️ System Architecture
+---
 
-Data Flow:
+## 🏗 System Architecture
 
-Raw medical Q&A dataset uploaded from Kaggle to S3
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        AWS VPC (25cdkg-vpc)                 │
+│   CIDR: 10.0.0.0/16                                        │
+│                                                             │
+│  ┌──────────────────────┐    ┌────────────────────────┐    │
+│  │  Public Subnet        │    │  EMR Cluster           │    │
+│  │  10.0.1.0/24         │    │  (25cdkg-emr-cluster)  │    │
+│  │                      │    │  m5.xlarge × 3 nodes   │    │
+│  │  ┌────────────────┐  │    │                        │    │
+│  │  │  EC2 Instance  │  │    │  PySpark Pipeline      │    │
+│  │  │ (25cdkg-ec2)   │  │    │  reads  S3 raw data    │    │
+│  │  │  g4dn.xlarge   │  │    │  writes S3 processed   │    │
+│  │  │                │  │    └────────────┬───────────┘    │
+│  │  │  Ollama :11434 │  │                 │                │
+│  │  │  OpenWebUI:8080│  │    ┌────────────▼───────────┐    │
+│  │  └────────────────┘  │    │  Amazon S3             │    │
+│  │                      │    │  25cdkg-medical-qa/    │    │
+│  │  Internet Gateway    │    │  ├── raw-data/         │    │
+│  │  Route: 0.0.0.0/0   │    │  ├── processed-data/   │    │
+│  └──────────────────────┘    │  └── eda/              │    │
+│                              └────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+          │
+          │  Browser (port 8080)
+          ▼
+     👤  End User
+```
 
-EMR cluster (m5.xlarge × 3) runs PySpark preprocessing in Public Subnet (10.0.2.0/24)
+**Data Flow:**  
+Raw CSV on S3 → EMR PySpark cleans, filters, and formats data into ChatML → processed JSON splits written back to S3 → downloaded locally → Google Colab fine-tunes Qwen2.5-1.5B with LoRA → model exported to GGUF → uploaded to EC2 → Ollama serves the model → OpenWebUI provides the browser chat interface → user interacts.
 
-Processed JSONL files saved back to S3 via HTTPS (port 443)
+---
 
-Fine-tuning notebook trains the model using LoRA (PEFT) on GPU hardware
+## ✅ Prerequisites
 
-Fine-tuned model exported to GGUF format for efficient inference
+### Accounts & Access
+- AWS account with access to EMR, EC2, S3, VPC
+- Google account (for free Colab GPU)
+- Kaggle account (for dataset download)
+- Hugging Face account (optional — for model browsing)
 
-GGUF model loaded into Ollama (LLM Runner) on EC2 in Public Subnet A (10.0.1.0/24)
+### Local Tools
+```bash
+# AWS CLI
+aws --version          # >= 2.x
 
-OpenWebUI sends LLM requests to Ollama on the same EC2 host
+# Python
+python --version       # >= 3.10
 
-NAT traffic routed through Internet Gateway (25cdkg-igw) with route 0.0.0.0/0
+# Git
+git --version
+```
 
-Users access the medical assistant through their browser via port 3000
+### AWS IAM Permissions Required
+- `AmazonEMRFullAccess`
+- `AmazonEC2FullAccess`
+- `AmazonS3FullAccess`
+- `AmazonVPCFullAccess`
 
-EC2 communicates with S3 via S3 API (port 443) for data and model downloads
+> ⚠️ **Resource Naming Policy:** Every AWS resource must be prefixed with your Queen's netID.  
+> Example: `25cdkg-vpc`, `25cdkg-ec2`, `25cdkg-emr-cluster`, `25cdkg-s3-bucket`
 
-📁 Repository Structure
+---
 
+## 📁 Repository Structure
+
+```
 .
-├── README.md                       # This file
-├── .gitignore                      # Excludes large model files and keys
-├── Data_Preprocessing.ipynb        # PySpark preprocessing notebook (Section 4)
-├── Fine_Tuning.ipynb               # Model fine-tuning notebook (Section 5)
-├── Complete_Code_MQA.ipynb         # Combined complete pipeline notebook
-├── install_deps.txt                # Python dependencies list
-├── AWS_Images/                     # AWS Console & architecture screenshots
-│   ├── architecture_diagram.png    # System architecture diagram
-│   ├── emr_cluster_config.png
-│   ├── emr_terminated.png
-│   ├── s3_output_files.png
-│   ├── vpc_config.png
-│   ├── ec2_instance.png
-│   ├── ollama_serving.png
-│   ├── curl_response.png
-│   ├── openwebui_interface.png
-│   ├── openwebui_conversation.png
-│   ├── cost_by_service_chart.png
-│   └── cost_by_service_table.png
-├── EDA_Images/                     # Exploratory Data Analysis figures
-│   ├── fig1_question_length.png
-│   ├── fig2_label_balance.png
-│   ├── fig3_q_vs_a_scatter.png
-│   ├── fig4_top5_categories.png
-│   └── fig5_split_counts.png
-└── Model_Images/                   # Training and evaluation figures
-    ├── training_curves.png
-    └── evaluation_metrics.png
+├── Data_Preprocessing.py        # PySpark pipeline — runs on AWS EMR
+├── Complete_Code_MQA.ipynb      # Local exploration notebook (PySpark + EDA)
+├── Fine_Tuning.ipynb            # Unsloth LoRA fine-tuning notebook (Colab)
+├── .gitignore
+└── README.md
+```
 
+> **Note:** Model weights (`medical_qa_gguf/`, `medical_qa_model_lora/`) and AWS `.pem` keys are excluded by `.gitignore` and must never be committed.
 
+---
 
-📋 Prerequisites
+## 🌐 Phase 1 — AWS VPC & Networking
 
-|
+### 1.1 Create the VPC
 
-| Requirement | Version / Notes |
-| AWS Account | Region: us-east-1 (N. Virginia) |
-| Python | 3.10+ |
-| Apache Spark | 3.x (on EMR — no local install needed) |
-| GPU (for fine-tuning) | ≥16 GB VRAM (local GPU or Google Colab T4 free tier) |
-| AWS CLI | Configured with project credentials (aws configure) |
-| Docker | Required on EC2 for OpenWebUI |
+```bash
+# Create VPC
+aws ec2 create-vpc \
+  --cidr-block 10.0.0.0/16 \
+  --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=25cdkg-vpc}]'
 
-Python Dependencies
+# Enable DNS hostnames
+aws ec2 modify-vpc-attribute \
+  --vpc-id <VPC_ID> \
+  --enable-dns-hostnames
+```
 
-# Preprocessing
-pip install pyspark kagglehub matplotlib seaborn pandas numpy
+### 1.2 Create Public Subnet
 
-# Fine-tuning (requires CUDA GPU)
-pip install unsloth trl peft accelerate bitsandbytes transformers datasets
+```bash
+aws ec2 create-subnet \
+  --vpc-id <VPC_ID> \
+  --cidr-block 10.0.1.0/24 \
+  --availability-zone us-east-1a \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=25cdkg-subnet-public}]'
 
-# Evaluation
-pip install rouge-score nltk scikit-learn
+# Enable auto-assign public IPs
+aws ec2 modify-subnet-attribute \
+  --subnet-id <SUBNET_ID> \
+  --map-public-ip-on-launch
+```
 
+### 1.3 Internet Gateway & Route Table
 
+```bash
+# Create and attach Internet Gateway
+aws ec2 create-internet-gateway \
+  --tag-specifications 'ResourceType=internet-gateway,Tags=[{Key=Name,Value=25cdkg-igw}]'
 
-Or install all at once:
+aws ec2 attach-internet-gateway \
+  --internet-gateway-id <IGW_ID> \
+  --vpc-id <VPC_ID>
 
-pip install -r install_deps.txt
+# Create route table and add default route
+aws ec2 create-route-table \
+  --vpc-id <VPC_ID> \
+  --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=25cdkg-rt-public}]'
 
+aws ec2 create-route \
+  --route-table-id <RT_ID> \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id <IGW_ID>
 
+aws ec2 associate-route-table \
+  --route-table-id <RT_ID> \
+  --subnet-id <SUBNET_ID>
+```
 
-Note: The fine-tuning notebook requires a CUDA-compatible GPU with ≥16 GB VRAM. Google Colab (T4 GPU, free tier) is sufficient as an alternative.
+### 1.4 Security Groups
 
-IAM Requirements
+```bash
+# EC2 Security Group
+aws ec2 create-security-group \
+  --group-name 25cdkg-sg-ec2 \
+  --description "EC2 SG for Ollama and OpenWebUI" \
+  --vpc-id <VPC_ID>
 
-| Policy | Purpose |
-| AmazonS3FullAccess | Upload/download data and model artefacts |
-| AmazonEC2FullAccess | Launch and manage EC2 instances |
-| AmazonEMRFullAccess | Create and terminate EMR clusters |
-| IAMFullAccess (or scoped) | Attach instance profiles to EMR/EC2 |
+# Open required ports
+aws ec2 authorize-security-group-ingress --group-id <SG_ID> \
+  --protocol tcp --port 22    --cidr 0.0.0.0/0     # SSH
+aws ec2 authorize-security-group-ingress --group-id <SG_ID> \
+  --protocol tcp --port 8080  --cidr 0.0.0.0/0     # OpenWebUI
+aws ec2 authorize-security-group-ingress --group-id <SG_ID> \
+  --protocol tcp --port 11434 --cidr 0.0.0.0/0     # Ollama API
+```
 
-EMR also requires a service role (AmazonEMR-ServiceRole) and an EC2 instance profile (AmazonEMR-InstanceProfile) — these are created automatically when you launch EMR via the console for the first time.
+| Port | Service | Reason |
+|------|---------|--------|
+| 22 | SSH | Remote access to EC2 |
+| 8080 | OpenWebUI | Browser chat interface |
+| 11434 | Ollama | LLM API endpoint |
 
-📊 Dataset
+---
 
-| Field | Details |
+## 📦 Phase 2 — Dataset & S3 Setup
+
+### 2.1 Create S3 Bucket
+
+```bash
+aws s3api create-bucket \
+  --bucket 25cdkg-medical-qa \
+  --region us-east-1
+
+# Create folder structure
+aws s3api put-object --bucket 25cdkg-medical-qa --key 25cdkg-raw-data/
+aws s3api put-object --bucket 25cdkg-medical-qa --key 25cdkg-processed-data/
+aws s3api put-object --bucket 25cdkg-medical-qa --key 25cdkg-eda/
+```
+
+### 2.2 Download & Upload the Dataset
+
+```bash
+# Install kagglehub
+pip install kagglehub
+
+# Download (Python)
+python3 -c "
+import kagglehub
+path = kagglehub.dataset_download('thedevastator/comprehensive-medical-q-a-dataset')
+print('Downloaded to:', path)
+"
+
+# Upload raw CSV to S3
+aws s3 cp /path/to/train.csv s3://25cdkg-medical-qa/25cdkg-raw-data/train.csv
+```
+
+**Dataset Summary:**
+
+| Property | Value |
+|----------|-------|
 | Name | Comprehensive Medical Q&A Dataset |
 | Source | Kaggle |
 | License | CC BY 4.0 |
-| Raw Samples | 38,088 |
-| Post-ETL Samples | 17,023 |
-| Columns | qtype, Question, Answer |
+| Total Samples | ~16,400 rows |
+| Columns | `qtype`, `Question`, `Answer` |
+| Train Split | 70% |
+| Validation Split | 15% |
+| Test Split | 15% |
 
-Sample (Verbatim):
+**Sample Record:**
+```
+qtype:    "symptoms"
+Question: "what are the symptoms of diabetes?"
+Answer:   "symptoms of diabetes include frequent urination, increased thirst, 
+           unexplained weight loss, fatigue, blurred vision..."
+```
 
-Question Type: susceptibility
-Q: Who is at risk for Lymphocytic Choriomeningitis (LCM)?
-A: LCMV infections can occur after exposure to fresh urine, droppings,
-   saliva, or nesting materials from infected rodents. Transmission may
-   also occur when these materials are directly introduced into broken
-   skin, the nose, the eyes, or the mouth, or presumably, via the bite
-   of an infected rodent. Person-to-person transmission has not been
-   reported, with the exception of vertical transmission from infected
-   mother to fetus, and rarely, through organ transplantation.
+> **Data Leakage Prevention:** Splits were created using PySpark `randomSplit([0.7, 0.15, 0.15], seed=42)` on the fully deduplicated dataset. Deduplication (`dropDuplicates`) was applied before splitting to ensure no duplicate Q&A pairs appear across splits.
 
+---
 
+## ⚡ Phase 3 — Data Preprocessing on EMR
 
-Preprocessing Pipeline
+### 3.1 Launch EMR Cluster
 
-| Step | Operation | Purpose |
-| 1 | Lowercase + trim | Consistent text format across all records |
-| 2 | Drop nulls | Remove rows with missing Question or Answer |
-| 3 | Word count filtering | Q ≥ 5 words, 10 ≤ A ≤ 500 words |
-| 4 | Whitespace cleanup | Collapse \s+ → single space |
-| 5 | Deduplication | Remove exact duplicate (Question, Answer) pairs |
-| 6 | ChatML formatting | Wrap in `< |
-| 7 | Character-length filter | Q > 20 chars, A > 40 chars |
+```bash
+aws emr create-cluster \
+  --name "25cdkg-emr-cluster" \
+  --release-label emr-7.0.0 \
+  --applications Name=Spark \
+  --instance-type m5.xlarge \
+  --instance-count 3 \
+  --ec2-attributes SubnetId=<SUBNET_ID>,KeyName=25cdkg-key \
+  --use-default-roles \
+  --region us-east-1
+```
 
-Data Leakage Prevention
+**EMR Configuration:**
 
-Split performed after all preprocessing is complete.
+| Setting | Value |
+|---------|-------|
+| Release | EMR 7.0.0 |
+| Application | Apache Spark |
+| Master Node | m5.xlarge |
+| Worker Nodes | 2 × m5.xlarge |
+| Region | us-east-1 |
 
-Random split with fixed seed=42 for full reproducibility.
+### 3.2 Upload and Run the PySpark Script
 
-No overlap between train, validation, and test sets.
+```bash
+# Upload script to S3
+aws s3 cp Data_Preprocessing.py s3://25cdkg-medical-qa/scripts/
 
-Train / Validation / Test Split
+# Submit PySpark job to EMR
+aws emr add-steps \
+  --cluster-id <CLUSTER_ID> \
+  --steps Type=Spark,Name="MedicalQA-Preprocessing",\
+ActionOnFailure=CONTINUE,\
+Args=[s3://25cdkg-medical-qa/scripts/Data_Preprocessing.py]
+```
 
-| Split | Samples | Percentage |
-| Train | ~12,033 | 70% |
-| Validation | ~2,507 | 15% |
-| Test | ~2,483 | 15% |
+### 3.3 Pipeline Steps Explained
 
-EDA Figures (5 total — available in EDA_Images/)
+The `Data_Preprocessing.py` script performs the following:
+
+| Step | Description |
+|------|-------------|
+| **1** | Initialize Spark Session |
+| **2** | Load `train.csv` from S3 |
+| **3** | Lowercase & trim `Question`, `Answer`, `qtype` columns |
+| **4** | Drop rows with null Question or Answer |
+| **5** | Compute word counts (`q_len`, `a_len`) for EDA |
+| **6** | Generate 5 EDA figures and upload to S3 |
+| **7** | Clean `qtype` column (extract sub-label after `:`) |
+| **8** | Outlier analysis on answer lengths |
+| **9** | Filter: `10 ≤ a_len ≤ 500` and `q_len ≥ 5` |
+| **10** | Deduplicate on `(Question, Answer)` |
+| **11** | Format into **ChatML** template |
+| **12** | Final length filter: `len(Question) > 20`, `len(Answer) > 40` |
+| **13** | Split 70/15/15 and save `train/`, `validation/`, `test/` JSON to S3 |
+
+**ChatML Format Applied:**
+```
+<|im_start|>system
+You are a professional medical assistant. Answer the patient's questions accurately.<|im_end|>
+<|im_start|>user
+{Question}<|im_end|>
+<|im_start|>assistant
+{Answer}<|im_end|>
+```
+
+### 3.4 EDA Figures
 
 | Figure | Description |
-| Fig 1 | Question word count distribution — most questions are 5–20 words |
-| Fig 2 | Top 10 question types (label balance) — identifies dominant medical categories |
-| Fig 3 | Question vs Answer length scatter — shows weak correlation (r ≈ 0.1) |
-| Fig 4 | Top 5 medical categories pie chart — treatment and prevention dominate |
-| Fig 5 | Sample count per split — confirms 70/15/15 ratio |
+|--------|-------------|
+| Fig 1 | Distribution of Question Word Counts |
+| Fig 2 | Top 10 Question Types (Label Balance) |
+| Fig 3 | Question vs Answer Length Correlation (scatter) |
+| Fig 4 | Distribution of Top 5 Medical Question Types (pie) |
+| Fig 5 | Sample Count per Split (Train / Validation / Test) |
 
-🛠️ Step-by-Step Replication
+### 3.5 Teardown EMR Cluster
 
-Step 1 — VPC & Networking (AWS Console)
+> ⚠️ **REQUIRED:** Terminate the cluster immediately after the job completes to avoid charges.
 
-Create the following resources via the AWS Console. All resources are prefixed with 25cdkg- per the course naming policy.
+```bash
+aws emr terminate-clusters --cluster-ids <CLUSTER_ID>
 
-| Resource | Name | Configuration |
-| VPC | 25cdkg-vpc | CIDR: 10.0.0.0/16 |
-| Public Subnet A | 25cdkg-public-1 | 10.0.1.0/24 (us-east-1a) — EC2 |
-| Public Subnet B | 25cdkg-public-2 | 10.0.2.0/24 (us-east-1b) — EMR |
-| Internet Gateway | 25cdkg-igw | Attached to VPC |
-| Route Table | 25cdkg-public-rt | 0.0.0.0/0 → IGW |
+# Verify terminated state
+aws emr describe-cluster --cluster-id <CLUSTER_ID> \
+  --query "Cluster.Status.State"
+```
 
-Security Groups:
+### 3.6 Download Processed Data Locally
 
-EMR Security Group: EMR SG
+```bash
+# Download for fine-tuning
+aws s3 cp s3://25cdkg-medical-qa/25cdkg-processed-data/train/      ./S3/train/      --recursive
+aws s3 cp s3://25cdkg-medical-qa/25cdkg-processed-data/validation/  ./S3/val/        --recursive
+aws s3 cp s3://25cdkg-medical-qa/25cdkg-processed-data/test/        ./S3/test/       --recursive
 
-| Port | Source | Purpose |
-| 22 | My IP | SSH access to EMR master node |
-| Intra-cluster | Self | EMR master ↔ core node communication |
+# Rename the part files
+mv ./S3/train/part-*.json      ./S3/train.json
+mv ./S3/val/part-*.json        ./S3/val.json
+mv ./S3/test/part-*.json       ./S3/test.json
+```
 
-EC2 Security Group: EC2 SG
+---
 
-| Port | Source | Purpose |
-| 22 | My IP only | SSH access for administration |
-| 3000 | 0.0.0.0/0 | OpenWebUI browser access |
-| 11434 | 127.0.0.1 | Ollama API (internal only — secured) |
-| 443 (outbound) | 0.0.0.0/0 | HTTPS to S3 API for data/model download |
+## 🧠 Phase 4 — Model Fine-Tuning (Colab)
 
-Design Justification:
+> Run `Fine_Tuning.ipynb` on **Google Colab** with a T4 GPU runtime.  
+> Runtime → Change runtime type → **T4 GPU**
 
-10.0.0.0/16 CIDR: Provides 65,536 IPs — sufficient for all project resources with room for expansion.
+### 4.1 Install Dependencies
 
-Two public subnets in different AZs: EMR in Subnet B, EC2 in Subnet A — logical separation of preprocessing and deployment.
+```python
+!pip install unsloth trl transformers datasets accelerate bitsandbytes
+```
 
-Internet Gateway + public route table: Required for S3 access (HTTPS 443), package downloads, and end-user browser access.
+### 4.2 Model Selection
 
-Port 3000 open to 0.0.0.0/0: Allows browser access to the chat interface from any location for demonstration.
+| Property | Value |
+|----------|-------|
+| Model | `Qwen2.5-1.5B-Instruct` |
+| Source | [Unsloth Hub](https://huggingface.co/unsloth/qwen2.5-1.5b-instruct-bnb-4bit) |
+| Parameters | 1.5 Billion |
+| License | Apache 2.0 |
+| Quantization | 4-bit (BnB) — loaded via Unsloth |
+| Domain Fit | General instruction-following; adapted to medical Q&A via LoRA |
+| Hardware Fit | Runs on Colab T4 (16 GB VRAM) with 4-bit quantization |
 
-Port 11434 restricted to localhost: Ollama API only accessible from OpenWebUI running on the same EC2 instance.
+**Why Qwen2.5-1.5B?**  
+At 1.5 B parameters with 4-bit quantization, the model fits comfortably in Colab's T4 GPU memory while still producing coherent, structured medical responses. Its instruction-tuned variant already understands the ChatML prompt format used in our preprocessed data.
 
-Port 22 restricted to My IP: SSH access limited to the developer's IP address for security.
+### 4.3 Load Model
 
-Outbound 443: EC2 and EMR both communicate with S3 via HTTPS (S3 API port 443).
+```python
+from unsloth import FastLanguageModel
 
-Step 2 — Upload Raw Data to S3
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name="unsloth/qwen2.5-1.5b-instruct-bnb-4bit",
+    max_seq_length=2048,
+    load_in_4bit=True,
+)
+```
 
-# Create S3 bucket
-aws s3 mb s3://25cdkg-medical-qa --region us-east-1
+### 4.4 Add LoRA Adapters
 
-# Download dataset from Kaggle (requires Kaggle account)
-# Then upload to S3:
-aws s3 cp train.csv s3://25cdkg-medical-qa/raw/train.csv
+```python
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=16,
+    lora_alpha=16,
+    lora_dropout=0,
+    bias="none",
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj"],
+)
+```
 
+### 4.5 Training
 
+```python
+from trl import SFTTrainer
+from transformers import TrainingArguments
 
-Step 3 — Data Preprocessing on AWS EMR
-
-3a. EMR Cluster Configuration
-
-| Setting | Value |
-| Cluster Name | 25cdkg-medical-qa-preprocessing |
-| EMR Release | emr-7.x |
-| Master Node | 1 × m5.xlarge |
-| Core Nodes | 2 × m5.xlarge |
-| Region | us-east-1 |
-| VPC / Subnet | 25cdkg-vpc / Public Subnet B (10.0.2.0/24) |
-| Security Group | EMR SG |
-| EC2 Key Pair | 25cdkg-finetuning-cloud-project |
-| Auto-terminate | Enabled |
-
-3b. Upload Preprocessing Notebook to S3
-
-aws s3 cp Data_Preprocessing.ipynb s3://25cdkg-medical-qa/scripts/
-
-
-
-3c. PySpark Preprocessing Pipeline
-
-The notebook Data_Preprocessing.ipynb performs:
-
-# Load data from S3
-df = spark.read.csv("s3://25cdkg-medical-qa/raw/train.csv",
-                     header=True, inferSchema=True)
-
-# 1. Lowercase and trim all text columns
-df_clean = df.withColumn("Question", lower(trim(col("Question")))) \
-             .withColumn("Answer", lower(trim(col("Answer")))) \
-             .withColumn("qtype", lower(trim(col("qtype"))))
-
-# 2. Drop nulls
-df_clean = df_clean.dropna(subset=["Question", "Answer"])
-
-# 3. Add word counts and filter outliers
-df_eda = df_clean.withColumn("q_len", size(split(col("Question"), " "))) \
-                 .withColumn("a_len", size(split(col("Answer"), " ")))
-
-df_filtered = df_refined.filter(
-    (col("a_len") >= 10) & (col("a_len") <= 500) & (col("q_len") >= 5)
+trainer = SFTTrainer(
+    model=model,
+    tokenizer=tokenizer,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["validation"],
+    dataset_text_field="text",
+    max_seq_length=2048,
+    args=TrainingArguments(
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,   # effective batch = 8
+        warmup_steps=50,
+        num_train_epochs=2,
+        learning_rate=2e-4,
+        bf16=True,                        # T4 supports bfloat16
+        logging_steps=10,
+        optim="adamw_8bit",
+        weight_decay=0.01,
+        lr_scheduler_type="linear",
+        seed=42,
+        output_dir="outputs",
+        eval_strategy="steps",
+        eval_steps=500,
+    ),
 )
 
-# 4. Clean whitespace and deduplicate
-df_final_clean = df_filtered \
-    .withColumn("Answer", regexp_replace(col("Answer"), r"\s+", " ")) \
-    .withColumn("Question", regexp_replace(col("Question"), r"\s+", " ")) \
-    .dropDuplicates(["Question", "Answer"])
+trainer.train()
+```
 
-# 5. Apply ChatML template for Qwen 2.5 Instruct
-df_templated = df_final_clean.withColumn("text", concat(
-    lit("<|im_start|>system\nYou are a professional medical assistant..."),
-    lit("<|im_start|>user\n"), col("Question"), lit("<|im_end|>\n"),
-    lit("<|im_start|>assistant\n"), col("Answer"), lit("<|im_end|>")
-))
+### 4.6 Export to GGUF
 
-# 6. Split 70/15/15 and save to S3
-train_df, val_df, test_df = df_final.randomSplit([0.7, 0.15, 0.15], seed=42)
-train_df.select("text").coalesce(1).write.mode("overwrite") \
-    .json("s3://25cdkg-medical-qa/processed/train")
-val_df.select("text").coalesce(1).write.mode("overwrite") \
-    .json("s3://25cdkg-medical-qa/processed/val")
-test_df.select("Question", "Answer").coalesce(1).write.mode("overwrite") \
-    .json("s3://25cdkg-medical-qa/processed/test_qa")
+```python
+model.save_pretrained_gguf(
+    "medical_qa_gguf",
+    tokenizer,
+    quantization_method="q4_k_m",
+)
+```
 
+Then upload the `.gguf` file to your EC2 instance:
 
+```bash
+scp -i 25cdkg-key.pem medical_qa_gguf/model.gguf \
+    ec2-user@<EC2_PUBLIC_IP>:/home/ec2-user/models/
+```
 
-3d. Verify Output and Terminate
+---
 
-# Verify output files on S3
-aws s3 ls s3://25cdkg-medical-qa/processed/ --recursive
+## 🚀 Phase 5 — Model Deployment on EC2
 
-# Expected output:
-# processed/train/part-00000-*.json    (~12,000 samples)
-# processed/val/part-00000-*.json      (~2,500 samples)
-# processed/test_qa/part-00000-*.json  (~2,500 samples)
+### 5.1 Launch EC2 Instance
 
-# Terminate cluster immediately after use
-aws emr terminate-clusters --cluster-ids j-XXXXXXXXXXXXX
+```bash
+aws ec2 run-instances \
+  --image-id ami-0c02fb55956c7d316 \   # Amazon Linux 2023
+  --instance-type g4dn.xlarge \
+  --key-name 25cdkg-key \
+  --security-group-ids <SG_ID> \
+  --subnet-id <SUBNET_ID> \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=25cdkg-ec2}]' \
+  --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":50}}]'
+```
 
-
-
-⚠️ Note: The EMR cluster must be terminated immediately after preprocessing. Screenshot of terminated cluster available in AWS_Images/emr_terminated.png.
-
-Step 4 — Model Fine-Tuning
-
-Model Selection
-
-| Field | Details |
-| Model | Qwen 2.5 1.5B Instruct |
-| Parameters | 1.56 billion |
-| Source | Unsloth / HuggingFace |
-| License | Apache 2.0 |
-| Quantization (training) | NF4 4-bit (BitsAndBytes) |
-| Quantization (export) | q4_k_m (GGUF for Ollama deployment) |
-
-Why this model:
-
-Under 10B parameters — fits on a single GPU as recommended in the project resource guide.
-
-Apache 2.0 license — allows commercial use and modification.
-
-Strong instruction-following capability with native ChatML template support.
-
-4-bit quantization reduces VRAM from 6 GB to 1.5 GB — practical for Colab and EC2.
-
-Unsloth library provides optimized LoRA training with 2× speedup.
-
-Fine-Tuning Workflow
-
-Open Fine_Tuning.ipynb on a GPU machine.
-
-Download processed train.jsonl and val.jsonl from S3.
-
-Run all cells in order: Load Model → Base Response → Add LoRA → Train → Evaluate → Export GGUF.
-
-Upload GGUF to S3 or transfer directly to EC2.
-
-Hyperparameter Table
-
-| Hyperparameter | Value | Reasoning |
-| LoRA Rank (r) | 16 | Balances VRAM usage with expressive power for domain adaptation |
-| LoRA Alpha | 16 | Standard scaling factor applied to LoRA weight updates |
-| LoRA Dropout | 0 | No dropout — dataset large enough to prevent overfitting |
-| Target Modules | q,k,v,o,gate,up,down_proj | All attention + MLP layers for comprehensive adaptation |
-| Learning Rate | 2e-4 | Standard stable starting point for PEFT with AdamW |
-| Batch Size | 1 | Optimized for memory efficiency on single GPU |
-| Gradient Accumulation | 8 | Simulates effective batch size of 8 for stable gradients |
-| Effective Batch Size | 8 | 1 × 8 = 8; provides stable gradient estimates |
-| Epochs | 2 (3,010 steps) | Sufficient for medical domain adaptation |
-| Warmup Steps | 50 | Gradual LR ramp-up to prevent early training instability |
-| Optimizer | adamw_8bit | Memory-efficient optimizer provided natively by Unsloth |
-| LR Scheduler | linear | Smooth linear decay throughout training |
-| Max Sequence Length | 2048 | Covers longest medical Q&A pairs with comfortable margin |
-| Trainable Params | 18,464,768 / 1,562,179,072 (1.18%) | Efficient — only 1.18% of weights updated |
-
-Training Results
-
-| Step | Training Loss | Validation Loss |
-| 500 | 0.985 | 1.027 |
-| 1000 | 0.983 | 0.988 |
-| 1500 | 0.948 | 0.962 |
-| 2000 | 0.893 | 0.954 |
-| 2500 | 0.993 | 0.943 |
-| 3000 | 0.896 | 0.938 |
-| 3010 | 0.982 | 0.938 |
-
-Validation loss decreased consistently from 1.027 → 0.938 (↓8.7%) with no signs of overfitting. Training curve available in Model_Images/training_curves.png.
-
-Base vs Fine-Tuned Comparison
-
-Prompt 1: "What are the symptoms of diabetes?"
-
-| Model | Response |
-| Base | Generic, brief response about diabetes |
-| Fine-tuned | "The first sign that you may have prediabetes is an FBS level between 100 and less than or equal to 126. In this case, your blood sugar levels are higher than normal but not high enough for a diagnosis of diabetes." |
-
-Prompt 2: "How is hypertension treated?"
-
-| Model | Response |
-| Base | Brief, generic answer |
-| Fine-tuned | "A person with high blood pressure can delay or even prevent the need for medication by making lifestyle changes such as losing weight, eating less sodium (salt), and getting more physical activity. These changes may be all that a doctor recommends in mild cases of hypertension." |
-
-Prompt 3: "What causes migraine headaches?"
-
-| Model | Response |
-| Base | Short, vague answer |
-| Fine-tuned | "Scientists aren't sure what causes migraines, but they think it's probably related to changes in the brain and chemicals released by blood vessels in the head that trigger pain. Some people with migraines may also have an abnormality of their trigeminal nerve..." |
-
-The fine-tuned model produces longer, more medically detailed, and more accurate responses.
-
-Evaluation Metrics (100 test samples)
-
-| Metric | Score |
-| ROUGE-1 | 0.4199 |
-| ROUGE-2 | 0.2319 |
-| ROUGE-L | 0.3171 |
-| BLEU | 0.1628 |
-
-Evaluation chart available in Model_Images/evaluation_metrics.png.
-
-Step 5 — EC2 Deployment (Ollama + OpenWebUI)
-
-5a. Launch EC2 Instance via AWS Console
+**EC2 Configuration:**
 
 | Setting | Value |
-| Name | 25cdkg-ec2 |
-| AMI | Ubuntu 22.04 LTS |
-| Instance Type | t2.micro / t3.micro |
-| VPC / Subnet | 25cdkg-vpc / Public Subnet A (10.0.1.0/24) |
-| Security Group | EC2 SG |
-| Storage | 30 GB gp3 |
-| Key Pair | 25cdkg-finetuning-cloud-project |
+|---------|-------|
+| Instance Type | `g4dn.xlarge` |
+| AMI | Amazon Linux 2023 |
+| vCPUs | 4 |
+| RAM | 16 GB |
+| GPU | NVIDIA T4 (16 GB VRAM) |
+| Storage | 50 GB EBS |
 
-5b. SSH into EC2
+### 5.2 Connect to EC2
 
-ssh -i "25cdkg-finetuning-cloud-project.pem" ubuntu@<25cdkg-ec2-public-ip>
+```bash
+ssh -i 25cdkg-key.pem ec2-user@<EC2_PUBLIC_IP>
+```
 
+### 5.3 Install Ollama
 
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
 
-5c. Install Ollama
+# Start Ollama service
+sudo systemctl start ollama
+sudo systemctl enable ollama
 
-# Install the Ollama LLM runner
-curl -fsSL [https://ollama.com/install.sh](https://ollama.com/install.sh) | sh
+# Verify
+ollama --version
+```
 
-# Verify Ollama is running
-sudo systemctl status ollama
+### 5.4 Load the Fine-Tuned Model
 
+```bash
+# Create models directory
+mkdir -p ~/models
 
+# Create Modelfile
+cat > ~/Modelfile << 'EOF'
+FROM /home/ec2-user/models/model.gguf
 
-5d. Load the Fine-Tuned Model
+SYSTEM "You are a professional medical assistant trained to answer patient questions accurately and clearly."
 
-# Option A: Download GGUF from S3
-aws s3 cp s3://25cdkg-medical-qa/models/unsloth.Q4_K_M.gguf ./medical-qa.gguf
-
-# Option B: SCP from local machine
-# scp -i "25cdkg-finetuning-cloud-project.pem" \
-#     medical_qa_gguf/unsloth.Q4_K_M.gguf ubuntu@EC2_IP:~/medical-qa.gguf
-
-# Create Modelfile for Ollama
-cat << 'EOF' > Modelfile
-FROM ./medical-qa.gguf
-SYSTEM "You are a professional medical assistant. Answer the patient's questions accurately."
-TEMPLATE """<|im_start|>system
-{{ .System }}<|im_end|>
-<|im_start|>user
-{{ .Prompt }}<|im_end|>
-<|im_start|>assistant
-"""
-PARAMETER temperature 0.7
+PARAMETER temperature 0.3
 PARAMETER top_p 0.9
-PARAMETER repeat_penalty 1.1
+PARAMETER stop "<|im_end|>"
 EOF
 
-# Create and register model with Ollama
-ollama create medical-qa -f Modelfile
+# Register model in Ollama
+ollama create 25cdkg-medical-qa -f ~/Modelfile
 
 # Verify model is loaded
 ollama list
+```
 
+### 5.5 Test the Model API
 
+```bash
+# Quick terminal test
+ollama run 25cdkg-medical-qa "What are the symptoms of diabetes?"
 
-5e. Deploy OpenWebUI (Docker)
+# curl API test
+curl http://localhost:11434/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "25cdkg-medical-qa",
+    "prompt": "What are common treatments for hypertension?",
+    "stream": false
+  }'
+```
 
-# Install Docker
-sudo apt-get update && sudo apt-get install -y docker.io
-sudo systemctl enable docker && sudo systemctl start docker
+---
 
-# Run OpenWebUI — auto-restarts on reboot via --restart always
-sudo docker run -d \
-  --name open-webui \
+## 🌐 Phase 6 — Web Interface (OpenWebUI)
+
+### 6.1 Install Docker
+
+```bash
+sudo yum update -y
+sudo yum install -y docker
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker ec2-user
+```
+
+### 6.2 Run OpenWebUI
+
+```bash
+docker run -d \
+  --name 25cdkg-openwebui \
   --restart always \
-  -p 3000:8080 \
-  -e OLLAMA_BASE_URL=[http://host.docker.internal:11434](http://host.docker.internal:11434) \
-  --add-host=host.docker.internal:host-gateway \
+  -p 8080:8080 \
+  -e OLLAMA_BASE_URL=http://host-gateway:11434 \
+  --add-host=host-gateway:host-gateway \
   ghcr.io/open-webui/open-webui:main
+```
 
-# Verify container is running
-sudo docker ps
+> The `--restart always` flag ensures OpenWebUI starts automatically on server reboot.
 
+### 6.3 Access the Interface
 
+Open your browser and navigate to:
 
-Access the interface at: http://<25cdkg-ec2-public-ip>:3000
+```
+http://<EC2_PUBLIC_IP>:8080
+```
 
-Create an admin account on first visit.
+1. Create an admin account on first launch.
+2. Select **25cdkg-medical-qa** from the model dropdown.
+3. Start chatting with the fine-tuned medical assistant.
 
-Select medical-qa model from the dropdown.
+### 6.4 Verify Auto-Start on Reboot
 
-Start asking medical questions.
+```bash
+# Reboot the instance
+sudo reboot
 
-Auto-Start Configuration:
+# After reconnecting, verify both services are running
+sudo systemctl status ollama
+docker ps | grep openwebui
+```
 
-OpenWebUI: --restart always flag ensures Docker container starts automatically on EC2 reboot.
+---
 
-Ollama: Installed as a systemd service — auto-starts on boot.
+## 📊 Hyperparameter Table
 
-5f. Test via cURL API
+| Parameter | Value |
+|-----------|-------|
+| Base Model | `Qwen2.5-1.5B-Instruct` |
+| Total Parameters | 1.5 Billion |
+| Quantization (loading) | 4-bit (BitsAndBytes) |
+| Fine-Tuning Method | LoRA (PEFT via Unsloth) |
+| LoRA Rank (r) | 16 |
+| LoRA Alpha | 16 |
+| LoRA Dropout | 0 |
+| Target Modules | q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj |
+| Learning Rate | 2e-4 |
+| Batch Size (per device) | 1 |
+| Gradient Accumulation Steps | 8 (effective batch = 8) |
+| Warmup Steps | 50 |
+| Number of Epochs | 2 |
+| Optimizer | AdamW 8-bit |
+| Weight Decay | 0.01 |
+| LR Scheduler | Linear |
+| Max Sequence Length | 2048 |
+| Export Quantization | Q4_K_M (GGUF) |
+| Training Hardware | Google Colab T4 GPU |
+| Inference Hardware | AWS EC2 g4dn.xlarge |
 
-curl http://localhost:11434/api/generate -d '{
-  "model": "medical-qa",
-  "prompt": "What are the symptoms of diabetes?",
-  "stream": false
-}'
+---
 
+## 💰 AWS Cost Summary
 
+| Service | Configuration | Approx. Cost |
+|---------|---------------|-------------|
+| **EMR Cluster** | 3 × m5.xlarge, ~2 hours | ~$1.50 |
+| **EC2 Instance** | g4dn.xlarge, on-demand | ~$0.526/hr |
+| **S3 Storage** | < 5 GB (data + EDA figures) | ~$0.12/month |
+| **Data Transfer** | S3 ↔ EMR (same region) | ~$0.00 |
+| **VPC / Networking** | Internet Gateway, route tables | ~$0.00 |
+| **Google Colab** | Free T4 GPU (fine-tuning) | $0.00 |
 
-Step 6 — Teardown (After Submission)
+> 💡 **Cost Tip:** Terminate the EMR cluster immediately after preprocessing. For EC2, stop the instance when not actively demoing to avoid continuous charges.
 
-⚠️ All resources must be terminated after use to avoid charges on the shared AWS account.
+---
 
-# 1. Terminate EC2 instance
-aws ec2 terminate-instances --instance-ids i-XXXXXXXXX
+## ✅ Replication Checklist
 
-# 2. Terminate EMR cluster (if not auto-terminated)
-aws emr terminate-clusters --cluster-ids j-XXXXXXXXX
+```
+[ ] AWS CLI configured (aws configure)
+[ ] S3 bucket created with correct folder structure
+[ ] Dataset downloaded from Kaggle and uploaded to S3
+[ ] VPC, subnet, IGW, route table, and security groups created
+[ ] EMR cluster launched and PySpark job submitted
+[ ] EMR cluster TERMINATED after job completion (screenshot required)
+[ ] Processed JSON files downloaded from S3
+[ ] Fine_Tuning.ipynb run on Colab with T4 GPU
+[ ] GGUF model exported and transferred to EC2
+[ ] Ollama installed and model registered on EC2
+[ ] curl test to Ollama API successful
+[ ] OpenWebUI running on port 8080 with auto-restart
+[ ] Browser chat session working with fine-tuned model visible
+```
 
-# 3. Delete S3 bucket contents and bucket
-aws s3 rb s3://25cdkg-medical-qa --force
+---
 
-# 4. Delete VPC resources (security groups, subnets, route tables, IGW, VPC)
+## 📚 References
 
+- [Unsloth Fine-Tuning Guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/tutorial-how-to-finetune-llama-3-and-use-in-ollama)
+- [Qwen2.5 on Hugging Face](https://huggingface.co/unsloth/qwen2.5-1.5b-instruct-bnb-4bit)
+- [Comprehensive Medical Q&A Dataset — Kaggle](https://www.kaggle.com/datasets/thedevastator/comprehensive-medical-q-a-dataset)
+- [Ollama Documentation](https://ollama.com/docs)
+- [OpenWebUI GitHub](https://github.com/open-webui/open-webui)
+- [AWS EMR PySpark Documentation](https://docs.aws.amazon.com/emr/latest/ReleaseGuide/emr-spark.html)
 
+---
 
-All resources have been terminated. Screenshots available in AWS_Images/.
-
-🧪 Model Test Results
-
-Sample Outputs (Post Fine-Tuning)
-
-Q: What are the symptoms of pneumonia?
-A: The most common symptom of bacterial pneumonia is a cough with
-   phlegm or mucus that produces a wet sound when tapped on the
-   chest, fever, and chills. Viral pneumonia often has no specific
-   signs other than flu-like symptoms such as high fever, shaking
-   chills, and extreme fatigue.
-
-Q: What is the treatment for asthma?
-A: Medications can help prevent and control symptoms of asthma,
-   including bronchodilators and corticosteroids. Bronchodilators
-   work by relaxing and widening the airways so you can breathe
-   easier. Corticosteroid inhalers reduce swelling in the lining
-   of your airways.
-
-Q: What are the side effects of ibuprofen?
-A: Ibuprofen can cause stomach upset, heartburn, and diarrhea.
-   In rare cases, people take too much ibuprofen at one time
-   and may develop bleeding problems or ulcers in their
-   digestive tract.
-
-Q: How can I prevent heart disease?
-A: You can take steps to lower your risk of getting heart disease,
-   including maintaining a healthy diet, regular exercise, avoiding
-   smoking, and managing blood pressure and cholesterol levels.
-
-Q: How is tuberculosis diagnosed?
-A: A health care provider may diagnose active TB disease by
-   using tests including chest X-ray, sputum culture, and
-   tuberculin skin test (TST).
-
-
-
-💵 Cloud Infrastructure Cost Summary
-
-By Service (Actual — AWS Cost Explorer, April 2026)
-
-| AWS Service | Configuration | Cost (USD) |
-| EC2-Instances | t2.micro + t3.micro (deployment & testing) | $11.41 |
-| Elastic Load Balancing | Load balancer testing | $11.34 |
-| VPC | NAT Gateway / Elastic IP | $9.56 |
-| Tax | AWS-applied based on region | $5.22 |
-| EC2-Other | EBS storage, data transfer | $2.45 |
-| Elastic MapReduce (EMR) | m5.xlarge × 3 (preprocessing) | $2.45 |
-| S3 | Standard storage (~5 GB) | $0.09 |
-| Secrets Manager | — | $0.00 |
-| CloudShell | — | $0.00 |
-| Total |  | $42.51 |
-
-By Instance Type
-
-| Instance Type | Cost | Purpose |
-| No instance type | $28.67 | VPC, S3, networking, tax |
-| t2.micro | $5.38 | EC2 — Ollama + OpenWebUI deployment |
-| t3.micro | $5.00 | EC2 — initial testing |
-| m5.xlarge | $2.50 | EMR — Spark preprocessing (3 nodes) |
-| r8g.xlarge | $0.95 | EC2 — model testing |
-| t3.2xlarge | $0.02 | EC2 — brief testing |
-| c5.4xlarge | $0.00 | Brief testing |
-| Total | $42.51 |  |
-
-For a minimal reproduction (EMR + EC2 + S3 only), expected cost is approximately $15–20 USD. All resources terminated after use. Cost data from AWS Cost Explorer screenshots in AWS_Images/.
-
-🚫 Files Not in This Repository
-
-The following files are generated during execution and are too large for GitHub (>100 MB):
-
-| File / Folder | Size | How to Recreate |
-| medical_qa_model_lora/ | ~100 MB | Run Fine_Tuning.ipynb — "Save Model" cell |
-| medical_qa_gguf/ | ~1 GB | Run GGUF export cell in Fine_Tuning.ipynb |
-| unsloth_compiled_cache/ | ~200 MB | Generated automatically by Unsloth during training |
-| S3/ | ~50 MB | aws s3 cp s3://25cdkg-medical-qa/ S3/ --recursive |
-
-💻 Hardware Requirements
-
-| Stage | Minimum | Used in This Project |
-| Preprocessing | Any CPU (2 GB RAM) | EMR m5.xlarge × 3 |
-| Fine-Tuning | 16 GB VRAM GPU | NVIDIA RTX 5000 Ada (32 GB) |
-| Deployment | 4 GB RAM (CPU inference) | EC2 t2.micro |
-
-✅ Expected Output at Each Stage
-
-| Stage | Output | How to Verify |
-| Preprocessing | processed/*.jsonl on S3 | aws s3 ls s3://25cdkg-medical-qa/processed/ |
-| Fine-Tuning | medical_qa_model_lora/ | Contains adapter_model.safetensors |
-| GGUF Export | *.gguf file | File size ~1 GB |
-| Ollama Load | Model registered | ollama list shows medical-qa |
-| Web Interface | Browser accessible | Open http://EC2_IP:3000 |
-
-🔒 Security Note
-
-⚠️ The .pem SSH key file is NOT included in this repository for security reasons. To reproduce the deployment, generate your own key pair in the AWS EC2 Console.
-
-🏷️ Resource Naming Reference
-
-| Resource | Name |
-| VPC | 25cdkg-vpc |
-| Internet Gateway | 25cdkg-igw |
-| Public Subnet A (EC2) | 10.0.1.0/24 |
-| Public Subnet B (EMR) | 10.0.2.0/24 |
-| Route Table | 25cdkg-public-rt |
-| EMR Security Group | EMR SG |
-| EC2 Security Group | EC2 SG |
-| S3 Bucket | 25cdkg-medical-qa |
-| EMR Cluster | 25cdkg-medical-qa-preprocessing |
-| EC2 Instance | 25cdkg-ec2 |
-| Ollama Model | medical-qa |
+<p align="center">
+  <b>CISC 886 — Cloud Computing · Queen's University · 2025</b>
+</p>
