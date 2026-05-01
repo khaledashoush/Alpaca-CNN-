@@ -6,19 +6,6 @@
 
 A cloud-based conversational chatbot designed to act as a **Professional Medical Assistant**. It leverages a fine-tuned **Qwen 2.5 1.5B Instruct** LLM trained on **17,023** structured medical Q&A records derived from the [Comprehensive Medical Q&A Dataset](https://www.kaggle.com/datasets/thedevastator/comprehensive-medical-q-a-dataset/data), deployed entirely on AWS infrastructure.
 
----
-
-
-<img width="1600" height="511" alt="image" src="https://github.com/user-attachments/assets/dcfa042a-6f05-4dcb-8701-971060c825f7" />
-
-
-
-
-
-
-
-
-
 
 
 ---
@@ -39,6 +26,13 @@ Step 6 → Teardown             # Terminate all resources
 ---
 
 ## 🏗️ System Architecture
+
+
+
+<img width="1600" height="511" alt="image" src="https://github.com/user-attachments/assets/9a5b61f9-5610-403e-b349-9748329a70c8" />
+
+
+
 
 ### Data Flow
 
