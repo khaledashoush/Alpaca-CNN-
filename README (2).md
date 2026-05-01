@@ -4,7 +4,7 @@
 
 **Student:** Salma Essam & Khaled Ashoush & Fatma Ahmed
 
-A cloud-based conversational chatbot designed to act as a **Professional Medical Assistant**. It leverages a fine-tuned **Qwen 2.5 1.5B Instruct** LLM trained on **17,023** structured medical Q&A records derived from the [Comprehensive Medical Q&A Dataset](https://www.kaggle.com/), deployed entirely on AWS infrastructure.
+A cloud-based conversational chatbot designed to act as a **Professional Medical Assistant**. It leverages a fine-tuned **Qwen 2.5 1.5B Instruct** LLM trained on **17,023** structured medical Q&A records derived from the [Comprehensive Medical Q&A Dataset]([https://www.kaggle.com/](https://www.kaggle.com/datasets/thedevastator/comprehensive-medical-q-a-dataset/data)), deployed entirely on AWS infrastructure.
 
 ---
 
