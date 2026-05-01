@@ -2,9 +2,24 @@
 
 **CISC 886 — Cloud Computing | Queen's University NetID:** 25cdkg
 
-**Student:** Salma Essam
+**Student:** Salma Essam & Khaled Ashoush & Fatma Ahmed
 
 A cloud-based conversational chatbot designed to act as a **Professional Medical Assistant**. It leverages a fine-tuned **Qwen 2.5 1.5B Instruct** LLM trained on **17,023** structured medical Q&A records derived from the [Comprehensive Medical Q&A Dataset](https://www.kaggle.com/), deployed entirely on AWS infrastructure.
+
+---
+
+
+<img width="1600" height="511" alt="image" src="https://github.com/user-attachments/assets/dcfa042a-6f05-4dcb-8701-971060c825f7" />
+
+
+
+
+
+
+
+
+
+
 
 ---
 
@@ -44,6 +59,11 @@ Step 6 → Teardown             # Terminate all resources
 
 ```
 .
+├── unsloth_compiled_cache/       # Auto-generated cache created by Unsloth during training
+├── project_instructions          # Project Requirement
+├── medical_qa_gguf/              # Fine-tuned model in GGUF format — used by Ollama for inference on EC2
+├── medical_qa_model_lora/        # LoRA adapter weights — the trained parameters from fine-tuning
+├── S3/                           # Local copy of S3 data (train.jsonl, val.jsonl, test_qa.jsonl) 
 ├── README.md                     # This file
 ├── .gitignore                    # Excludes large model files and keys
 ├── Data_Preprocessing.ipynb      # PySpark preprocessing notebook (Section 4)
@@ -80,7 +100,7 @@ Step 6 → Teardown             # Terminate all resources
 
 | Requirement | Version / Notes |
 |---|---|
-| **AWS Account** | Region: **us-east-1** (N. Virginia) |
+| **AWS Account** | Region: **us-east-1b** |
 | **Python** | 3.10+ |
 | **Apache Spark** | 3.x (on EMR — no local install needed) |
 | **GPU (for fine-tuning)** | ≥16 GB VRAM (local GPU or Google Colab T4 free tier) |
@@ -182,7 +202,7 @@ Create the following resources via the AWS Console. All resources are prefixed w
 
 ```bash
 # Create bucket
-aws s3 mb s3://25cdkg-medical-qa --region us-east-1
+aws s3 mb s3://25cdkg-medical-qa --region us-east-1b
 
 # Upload raw dataset
 aws s3 cp train.csv s3://25cdkg-medical-qa/raw/train.csv
@@ -206,7 +226,7 @@ aws emr create-cluster \
   --ec2-attributes \
     KeyName=25cdkg-key,SubnetId=<subnet-id-for-public-2> \
   --use-default-roles \
-  --region us-east-1
+  --region us-east-1b
 ```
 
 #### 3b. Run Preprocessing Notebook
@@ -222,6 +242,8 @@ Open `Data_Preprocessing.ipynb` and run all cells in order:
 ```bash
 # Verify output
 aws s3 ls s3://25cdkg-medical-qa/processed/
+aws s3 ls s3://25cdkg-medical-qa/eda/
+aws s3 ls s3://25cdkg-medical-qa/logs/
 ```
 
 #### 3c. Terminate EMR Cluster
@@ -299,11 +321,11 @@ training_args = TrainingArguments(
 | Parameter | Value |
 |---|---|
 | **AMI** | Ubuntu 22.04 LTS |
-| **Instance Type** | t2.micro (free tier) |
+| **Instance Type** | g4dn.xLarge |
 | **Subnet** | `25cdkg-public-1` (10.0.1.0/24) |
 | **Security Group** | EC2 SG |
 | **Key Pair** | `25cdkg-key` |
-| **Storage** | 30 GB gp3 |
+| **Storage** | 50 GB gp3 |
 
 #### 5b. Connect to EC2
 
@@ -450,7 +472,7 @@ The following files are generated during execution and are too large for GitHub 
 |---|---|---|
 | **Preprocessing** | Any CPU (2 GB RAM) | EMR m5.xlarge × 3 |
 | **Fine-Tuning** | 16 GB VRAM GPU | NVIDIA RTX 5000 Ada (32 GB) |
-| **Deployment** | 4 GB RAM (CPU inference) | EC2 t2.micro |
+| **Deployment** | 4 GB RAM (CPU inference) | EC2 g4dn.xLarge |
 
 ---
 
@@ -460,7 +482,7 @@ The following files are generated during execution and are too large for GitHub 
 |---|---|---|
 | **Preprocessing** | `processed/*.jsonl` on S3 | `aws s3 ls s3://25cdkg-medical-qa/processed/` |
 | **Fine-Tuning** | `medical_qa_model_lora/` | Contains `adapter_model.safetensors` |
-| **GGUF Export** | `*.gguf` file | File size ~1 GB |
+| **GGUF Export** | `*.gguf` file |
 | **Ollama Load** | Model registered | `ollama list` shows `medical-qa` |
 | **Web Interface** | Browser accessible | Open `http://EC2_IP:3000` |
 
